@@ -8,6 +8,10 @@ from pathlib import Path
 
 from anthropic import Anthropic
 
+USE_BEDROCK = os.environ.get("USE_BEDROCK", "").lower() == "true"
+if USE_BEDROCK:
+    from anthropic import AnthropicBedrock
+
 from claudecode.constants import (
     DEFAULT_CLAUDE_MODEL, DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_RETRIES,
     RATE_LIMIT_BACKOFF_MAX, PROMPT_TOKEN_LIMIT,
@@ -38,17 +42,21 @@ class ClaudeAPIClient:
         self.timeout_seconds = timeout_seconds or DEFAULT_TIMEOUT_SECONDS
         self.max_retries = max_retries or DEFAULT_MAX_RETRIES
         
-        # Get API key from environment or parameter
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "No Anthropic API key found. Please set ANTHROPIC_API_KEY environment variable "
-                "or provide api_key parameter."
-            )
-        
-        # Initialize Anthropic client
-        self.client = Anthropic(api_key=self.api_key)
-        logger.info("Claude API client initialized successfully")
+        self.use_bedrock = USE_BEDROCK
+
+        if self.use_bedrock:
+            self.api_key = "bedrock"
+            self.client = AnthropicBedrock()
+            logger.info("Claude API client initialized with AWS Bedrock")
+        else:
+            self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+            if not self.api_key:
+                raise ValueError(
+                    "No Anthropic API key found. Please set ANTHROPIC_API_KEY environment variable "
+                    "or provide api_key parameter."
+                )
+            self.client = Anthropic(api_key=self.api_key)
+            logger.info("Claude API client initialized with direct Anthropic API")
     
     def validate_api_access(self) -> Tuple[bool, str]:
         """Validate that API access is working.
@@ -57,9 +65,9 @@ class ClaudeAPIClient:
             Tuple of (success, error_message)
         """
         try:
-            # Simple test call to verify API access
+            validation_model = self.model if self.use_bedrock else "claude-3-5-haiku-20241022"
             self.client.messages.create(
-                model="claude-3-5-haiku-20241022",
+                model=validation_model,
                 max_tokens=10,
                 messages=[{"role": "user", "content": "Hello"}],
                 timeout=10
