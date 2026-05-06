@@ -223,7 +223,7 @@ runs:
         export CLAUDE_TIMEOUT="$CLAUDECODE_TIMEOUT"
         
         # Run ClaudeCode audit with verbose debugging
-        export REPO_PATH=$(pwd)
+        export REPO_PATH="${REPO_PATH:-$(pwd)}"
         cd "$ACTION_PATH"
         
         # Enable verbose debugging
