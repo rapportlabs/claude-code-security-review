@@ -29,6 +29,30 @@ from claudecode.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def _get_claude_timeout_minutes() -> int:
+    """Read CLAUDE_TIMEOUT env var (minutes). Default: 15."""
+    raw = os.environ.get('CLAUDE_TIMEOUT', '15')
+    try:
+        value = int(raw)
+        if value <= 0:
+            return 15
+        return value
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid CLAUDE_TIMEOUT value '{raw}', using default 15 minutes")
+        return 15
+
+
+def _get_effort_level() -> Optional[str]:
+    """Read CLAUDE_EFFORT env var. Returns None if not set or invalid."""
+    raw = os.environ.get('CLAUDE_EFFORT', '').strip().lower()
+    valid_levels = ('low', 'medium', 'high', 'xhigh', 'max')
+    if raw in valid_levels:
+        return raw
+    if raw:
+        logger.warning(f"Invalid CLAUDE_EFFORT value '{raw}', ignoring (valid: {valid_levels})")
+    return None
+
 class ConfigurationError(ValueError):
     """Raised when configuration is invalid or missing."""
     pass
@@ -227,6 +251,10 @@ class SimpleClaudeRunner:
                 '--model', DEFAULT_CLAUDE_MODEL,
                 '--disallowed-tools', 'Bash(ps:*)'
             ]
+
+            effort_level = _get_effort_level()
+            if effort_level:
+                cmd.extend(['--effort', effort_level])
             
             # Run Claude Code with retry logic
             NUM_RETRIES = 3
@@ -387,7 +415,9 @@ def initialize_clients() -> Tuple[GitHubActionClient, SimpleClaudeRunner]:
         raise ConfigurationError(f'Failed to initialize GitHub client: {str(e)}')
     
     try:
-        claude_runner = SimpleClaudeRunner()
+        timeout_minutes = _get_claude_timeout_minutes()
+        claude_runner = SimpleClaudeRunner(timeout_minutes=timeout_minutes)
+        logger.info(f"Claude runner initialized: timeout={timeout_minutes}m, effort={_get_effort_level() or 'default'}")
     except Exception as e:
         raise ConfigurationError(f'Failed to initialize Claude runner: {str(e)}')
         
