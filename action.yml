@@ -53,6 +53,21 @@ inputs:
     required: false
     default: ''
 
+  pr-number:
+    description: 'Explicit PR number to review, for non-pull_request triggers (e.g. repository_dispatch). Falls back to the pull_request event payload.'
+    required: false
+    default: ''
+
+  pr-repository:
+    description: 'owner/repo of the PR to review, for non-pull_request triggers. Falls back to the current repository.'
+    required: false
+    default: ''
+
+  github-token:
+    description: 'Token used to fetch PR data and diff via the GitHub API. Falls back to the workflow github.token.'
+    required: false
+    default: ''
+
 outputs:
   findings-count:
     description: 'Number of security findings'
@@ -183,9 +198,9 @@ runs:
       if: steps.claudecode-check.outputs.enable_claudecode == 'true'
       shell: bash
       env:
-        GITHUB_TOKEN: ${{ github.token }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
+        GITHUB_TOKEN: ${{ inputs.github-token || github.token }}
+        GITHUB_REPOSITORY: ${{ inputs.pr-repository || github.repository }}
+        PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
         ANTHROPIC_API_KEY: ${{ inputs.claude-api-key }}
         ENABLE_CLAUDE_FILTERING: 'true' 
         EXCLUDE_DIRECTORIES: ${{ inputs.exclude-directories }}
@@ -203,9 +218,10 @@ runs:
         echo "findings_count=0" >> $GITHUB_OUTPUT
         echo "results_file=claudecode/claudecode-results.json" >> $GITHUB_OUTPUT
         
-        # Skip ClaudeCode if not a PR
-        if [ "${{ github.event_name }}" != "pull_request" ]; then
-          echo "ClaudeCode only runs on pull requests, skipping"
+        # Skip only if this is not a PR event AND no explicit PR number was provided.
+        # Async callers (e.g. repository_dispatch) pass pr-number to run outside a pull_request event.
+        if [ "${{ github.event_name }}" != "pull_request" ] && [ -z "${{ inputs.pr-number }}" ]; then
+          echo "ClaudeCode only runs on pull requests (or with an explicit pr-number), skipping"
           exit 0
         fi
         
