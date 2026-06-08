@@ -66,9 +66,12 @@ class GitHubActionClient:
     
     def __init__(self):
         """Initialize GitHub client using environment variables."""
-        self.github_token = os.environ.get('GITHUB_TOKEN')
+        # PR_GH_TOKEN (custom, overridable) takes precedence over the reserved
+        # GITHUB_TOKEN default so async cross-repo callers can inject a token
+        # scoped to the target repo. Falls back to GITHUB_TOKEN for sync runs.
+        self.github_token = os.environ.get('PR_GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
         if not self.github_token:
-            raise ValueError("GITHUB_TOKEN environment variable required")
+            raise ValueError("PR_GH_TOKEN or GITHUB_TOKEN environment variable required")
             
         self.headers = {
             'Authorization': f'Bearer {self.github_token}',
@@ -383,11 +386,15 @@ def get_environment_config() -> Tuple[str, int]:
     Raises:
         ConfigurationError: If required environment variables are missing or invalid
     """
-    repo_name = os.environ.get('GITHUB_REPOSITORY')
+    # PR_REPOSITORY (custom, overridable) takes precedence over the reserved
+    # GITHUB_REPOSITORY default, which the runner forces to the workflow repo
+    # and cannot be overridden via step env. Falls back to GITHUB_REPOSITORY
+    # for synchronous same-repo runs.
+    repo_name = os.environ.get('PR_REPOSITORY') or os.environ.get('GITHUB_REPOSITORY')
     pr_number_str = os.environ.get('PR_NUMBER')
-    
+
     if not repo_name:
-        raise ConfigurationError('GITHUB_REPOSITORY environment variable required')
+        raise ConfigurationError('PR_REPOSITORY or GITHUB_REPOSITORY environment variable required')
     
     if not pr_number_str:
         raise ConfigurationError('PR_NUMBER environment variable required')

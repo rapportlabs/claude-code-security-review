@@ -200,6 +200,11 @@ runs:
       env:
         GITHUB_TOKEN: ${{ inputs.github-token || github.token }}
         GITHUB_REPOSITORY: ${{ inputs.pr-repository || github.repository }}
+        # GITHUB_REPOSITORY (reserved) cannot be overridden via step env — the
+        # runner forces it to the workflow repo. Pass the target repo/token via
+        # custom (non-reserved) vars that the python reads first.
+        PR_REPOSITORY: ${{ inputs.pr-repository }}
+        PR_GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
         ANTHROPIC_API_KEY: ${{ inputs.claude-api-key }}
         ENABLE_CLAUDE_FILTERING: 'true' 
