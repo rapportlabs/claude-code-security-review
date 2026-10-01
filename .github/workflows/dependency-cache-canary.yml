@@ -1,0 +1,235 @@
+name: SAST dependency cache canary
+'on':
+  push:
+    branches:
+    - codex/sast-cache-canary
+permissions:
+  contents: read
+jobs:
+  cold:
+    runs-on: arm-2core-spot
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      with:
+        ref: d6e940171d0ff95957d5a75c98e76439e9f36efb
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: 3.x
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: '18'
+    - id: claudecode-check
+      run: echo "enable_claudecode=true" >> "$GITHUB_OUTPUT"
+    - name: Verify internal cache and record network baseline
+      shell: bash
+      run: 'python - <<''PYCODE''
+
+        import os, urllib.parse
+
+        h=urllib.parse.urlparse(os.environ.get(''ACTIONS_CACHE_URL'','''')).hostname
+
+        print(''cache host:'',h)
+
+        assert h == ''actions-cache-server.actions-cache-server.svc.cluster.local'', ''Internal Actions cache endpoint unavailable; aborting canary''
+
+        PYCODE
+
+        awk ''NR>2 {gsub(":", "", $1); if ($1 != "lo") {rx+=$2; tx+=$10}} END {print rx, tx}'' /proc/net/dev > "$RUNNER_TEMP/network-before.txt"
+
+        '
+    - name: Prepare dependency cache keys
+      id: dependency-cache-keys
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.workspace }}
+      run: "# Hash the action's requirements, not files from the caller's checkout.\n# Isolated Python avoids importing modules from the PR workspace.\nREQUIREMENTS_HASH=$(python -I -c 'import hashlib,\
+        \ pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \"$ACTION_PATH/claudecode/requirements.txt\")\nPYTHON_VERSION=$(python -I -c 'import platform; print(platform.python_version())')\n\
+        PIP_VERSION=$(python -I -m pip --version | awk '{print $2}')\nNODE_VERSION=$(node --version)\nNPM_VERSION=$(npm --version)\n# Floating dependency constraints are unchanged. Refresh the immutable\n\
+        # cache weekly, with the previous compatible entry available as a seed.\nCACHE_WEEK=$(date -u +%G-W%V)\nPIP_PREFIX=\"claudecode-pip-v1-${RUNNER_OS}-${RUNNER_ARCH}-${PYTHON_VERSION}-${PIP_VERSION}-${REQUIREMENTS_HASH}-\"\
+        \nNPM_PREFIX=\"claudecode-npm-v1-${RUNNER_OS}-${RUNNER_ARCH}-${NODE_VERSION}-${NPM_VERSION}-claude-code-\"\n{\n  echo \"pip-prefix=$PIP_PREFIX\"\n  echo \"pip-key=${PIP_PREFIX}${CACHE_WEEK}\"\n\
+        \  echo \"npm-prefix=$NPM_PREFIX\"\n  echo \"npm-key=${NPM_PREFIX}${CACHE_WEEK}\"\n} >> \"$GITHUB_OUTPUT\"\n"
+    - name: Restore pip download cache
+      id: pip-download-cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.dependency-cache-keys.outcome == 'success'
+      continue-on-error: true
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ runner.temp }}/claudecode-dependencies/pip
+        key: ${{ steps.dependency-cache-keys.outputs.pip-key }}
+        restore-keys: ${{ steps.dependency-cache-keys.outputs.pip-prefix }}
+    - name: Restore npm download cache
+      id: npm-download-cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.dependency-cache-keys.outcome == 'success'
+      continue-on-error: true
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ runner.temp }}/claudecode-dependencies/npm/_cacache
+        key: ${{ steps.dependency-cache-keys.outputs.npm-key }}
+        restore-keys: ${{ steps.dependency-cache-keys.outputs.npm-prefix }}
+    - name: Install dependencies
+      id: install-dependencies
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.workspace }}
+        PIP_CACHE_DIR: ${{ runner.temp }}/claudecode-dependencies/pip
+        npm_config_cache: ${{ runner.temp }}/claudecode-dependencies/npm
+      run: "echo \"::group::Install Deps\"\nif [ \"${{ steps.claudecode-check.outputs.enable_claudecode }}\" == \"true\" ]; then\n  pip install -r \"$ACTION_PATH/claudecode/requirements.txt\"\n  npm install\
+        \ -g @anthropic-ai/claude-code\nfi\nsudo apt-get update && sudo apt-get install -y jq\necho \"::endgroup::\"\n"
+    - name: Save pip download cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.install-dependencies.outcome == 'success' && steps.pip-download-cache.outcome == 'success' && steps.pip-download-cache.outputs.cache-hit
+        != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ runner.temp }}/claudecode-dependencies/pip
+        key: ${{ steps.dependency-cache-keys.outputs.pip-key }}
+    - name: Save npm download cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.install-dependencies.outcome == 'success' && steps.npm-download-cache.outcome == 'success' && steps.npm-download-cache.outputs.cache-hit
+        != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ runner.temp }}/claudecode-dependencies/npm/_cacache
+        key: ${{ steps.dependency-cache-keys.outputs.npm-key }}
+    - name: Cache and network results
+      shell: bash
+      env:
+        PIP_HIT: ${{ steps.pip-download-cache.outputs.cache-hit }}
+        NPM_HIT: ${{ steps.npm-download-cache.outputs.cache-hit }}
+      run: 'awk ''NR>2 {gsub(":", "", $1); if ($1 != "lo") {rx+=$2; tx+=$10}} END {print rx, tx}'' /proc/net/dev > "$RUNNER_TEMP/network-after.txt"
+
+        python - <<''PYCODE''
+
+        import os,pathlib
+
+        p=pathlib.Path(os.environ[''RUNNER_TEMP''])
+
+        b=list(map(int,(p/''network-before.txt'').read_text().split())); a=list(map(int,(p/''network-after.txt'').read_text().split()))
+
+        s=f"pip exact hit: {os.environ[''PIP_HIT'']}\nnpm exact hit: {os.environ[''NPM_HIT'']}\nJob network RX delta bytes (cache + registry + apt): {a[0]-b[0]}\nJob network TX delta bytes: {a[1]-b[1]}\n"
+
+        print(s)
+
+        with open(os.environ[''GITHUB_STEP_SUMMARY''],''a'') as f:f.write(s)
+
+        PYCODE
+
+        '
+  warm:
+    runs-on: arm-2core-spot
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      with:
+        ref: d6e940171d0ff95957d5a75c98e76439e9f36efb
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: 3.x
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: '18'
+    - id: claudecode-check
+      run: echo "enable_claudecode=true" >> "$GITHUB_OUTPUT"
+    - name: Verify internal cache and record network baseline
+      shell: bash
+      run: 'python - <<''PYCODE''
+
+        import os, urllib.parse
+
+        h=urllib.parse.urlparse(os.environ.get(''ACTIONS_CACHE_URL'','''')).hostname
+
+        print(''cache host:'',h)
+
+        assert h == ''actions-cache-server.actions-cache-server.svc.cluster.local'', ''Internal Actions cache endpoint unavailable; aborting canary''
+
+        PYCODE
+
+        awk ''NR>2 {gsub(":", "", $1); if ($1 != "lo") {rx+=$2; tx+=$10}} END {print rx, tx}'' /proc/net/dev > "$RUNNER_TEMP/network-before.txt"
+
+        '
+    - name: Prepare dependency cache keys
+      id: dependency-cache-keys
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.workspace }}
+      run: "# Hash the action's requirements, not files from the caller's checkout.\n# Isolated Python avoids importing modules from the PR workspace.\nREQUIREMENTS_HASH=$(python -I -c 'import hashlib,\
+        \ pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \"$ACTION_PATH/claudecode/requirements.txt\")\nPYTHON_VERSION=$(python -I -c 'import platform; print(platform.python_version())')\n\
+        PIP_VERSION=$(python -I -m pip --version | awk '{print $2}')\nNODE_VERSION=$(node --version)\nNPM_VERSION=$(npm --version)\n# Floating dependency constraints are unchanged. Refresh the immutable\n\
+        # cache weekly, with the previous compatible entry available as a seed.\nCACHE_WEEK=$(date -u +%G-W%V)\nPIP_PREFIX=\"claudecode-pip-v1-${RUNNER_OS}-${RUNNER_ARCH}-${PYTHON_VERSION}-${PIP_VERSION}-${REQUIREMENTS_HASH}-\"\
+        \nNPM_PREFIX=\"claudecode-npm-v1-${RUNNER_OS}-${RUNNER_ARCH}-${NODE_VERSION}-${NPM_VERSION}-claude-code-\"\n{\n  echo \"pip-prefix=$PIP_PREFIX\"\n  echo \"pip-key=${PIP_PREFIX}${CACHE_WEEK}\"\n\
+        \  echo \"npm-prefix=$NPM_PREFIX\"\n  echo \"npm-key=${NPM_PREFIX}${CACHE_WEEK}\"\n} >> \"$GITHUB_OUTPUT\"\n"
+    - name: Restore pip download cache
+      id: pip-download-cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.dependency-cache-keys.outcome == 'success'
+      continue-on-error: true
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ runner.temp }}/claudecode-dependencies/pip
+        key: ${{ steps.dependency-cache-keys.outputs.pip-key }}
+        restore-keys: ${{ steps.dependency-cache-keys.outputs.pip-prefix }}
+    - name: Restore npm download cache
+      id: npm-download-cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.dependency-cache-keys.outcome == 'success'
+      continue-on-error: true
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ runner.temp }}/claudecode-dependencies/npm/_cacache
+        key: ${{ steps.dependency-cache-keys.outputs.npm-key }}
+        restore-keys: ${{ steps.dependency-cache-keys.outputs.npm-prefix }}
+    - name: Install dependencies
+      id: install-dependencies
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.workspace }}
+        PIP_CACHE_DIR: ${{ runner.temp }}/claudecode-dependencies/pip
+        npm_config_cache: ${{ runner.temp }}/claudecode-dependencies/npm
+      run: "echo \"::group::Install Deps\"\nif [ \"${{ steps.claudecode-check.outputs.enable_claudecode }}\" == \"true\" ]; then\n  pip install -r \"$ACTION_PATH/claudecode/requirements.txt\"\n  npm install\
+        \ -g @anthropic-ai/claude-code\nfi\nsudo apt-get update && sudo apt-get install -y jq\necho \"::endgroup::\"\n"
+    - name: Save pip download cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.install-dependencies.outcome == 'success' && steps.pip-download-cache.outcome == 'success' && steps.pip-download-cache.outputs.cache-hit
+        != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ runner.temp }}/claudecode-dependencies/pip
+        key: ${{ steps.dependency-cache-keys.outputs.pip-key }}
+    - name: Save npm download cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.install-dependencies.outcome == 'success' && steps.npm-download-cache.outcome == 'success' && steps.npm-download-cache.outputs.cache-hit
+        != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ runner.temp }}/claudecode-dependencies/npm/_cacache
+        key: ${{ steps.dependency-cache-keys.outputs.npm-key }}
+    - name: Cache and network results
+      shell: bash
+      env:
+        PIP_HIT: ${{ steps.pip-download-cache.outputs.cache-hit }}
+        NPM_HIT: ${{ steps.npm-download-cache.outputs.cache-hit }}
+      run: 'awk ''NR>2 {gsub(":", "", $1); if ($1 != "lo") {rx+=$2; tx+=$10}} END {print rx, tx}'' /proc/net/dev > "$RUNNER_TEMP/network-after.txt"
+
+        python - <<''PYCODE''
+
+        import os,pathlib
+
+        p=pathlib.Path(os.environ[''RUNNER_TEMP''])
+
+        b=list(map(int,(p/''network-before.txt'').read_text().split())); a=list(map(int,(p/''network-after.txt'').read_text().split()))
+
+        s=f"pip exact hit: {os.environ[''PIP_HIT'']}\nnpm exact hit: {os.environ[''NPM_HIT'']}\nJob network RX delta bytes (cache + registry + apt): {a[0]-b[0]}\nJob network TX delta bytes: {a[1]-b[1]}\n"
+
+        print(s)
+
+        with open(os.environ[''GITHUB_STEP_SUMMARY''],''a'') as f:f.write(s)
+
+        PYCODE
+
+        '
+    needs: cold
