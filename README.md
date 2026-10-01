@@ -60,6 +60,47 @@ This action is not hardened against prompt injection attacks and should only be 
 | `false-positive-filtering-instructions` | Path to custom false positive filtering instructions text file | None | No |
 | `custom-security-scan-instructions` | Path to custom security scan instructions text file to append to audit prompt | None | No |
 
+### Dependency download cache
+
+When Claude Code is enabled, the action restores and saves pip and npm download
+caches through `actions/cache`. On Rapportlabs ARC runners this uses the existing
+internal Actions cache service configured by the runner; the action does not
+override cache endpoints. Other runners use their configured Actions cache service.
+
+- pip caches only `$RUNNER_TEMP/claudecode-dependencies/pip`.
+- npm caches only `$RUNNER_TEMP/claudecode-dependencies/npm/_cacache`; npm logs,
+  authentication configuration, and installed global executables are not cached.
+- Keys include OS, CPU architecture, and the resolved runtime/package-manager
+  versions. The pip key also hashes this action's `claudecode/requirements.txt`,
+  independently of the caller's checkout.
+- Entries rotate weekly because existing package version constraints remain
+  floating. A compatible previous entry can seed the new week's cache. Normal
+  pip/npm installation still runs, including registry checks and missing downloads.
+- Cache preparation, restore, or save failures do not block dependency installation
+  or the scan. New entries are saved after successful installation and before
+  scanning; exact hits are not uploaded again.
+- The `.claudecode-marker` run-history cache and scan enablement are unchanged.
+  Python/Node runtime downloads, apt, repository checkout, and GitHub action
+  downloads are outside this cache.
+
+Actions cache repository/branch access rules still apply; shared keys do not grant
+cross-repository or cross-PR access. This cache reduces repeated external package
+downloads, but is not a package-registry proxy or a guarantee of offline installs.
+In particular, the run-history marker normally limits scans to one per PR. A new
+PR cannot reuse a sibling PR's dependency cache merely because its key matches.
+For reuse across PRs, first populate the same cache in the consuming repository's
+default/base branch, or verify an explicitly supported sharing policy on the
+internal server. Warming only this action repository does not warm every consumer.
+Without an accessible warm entry, first runs still download dependencies.
+
+For an ARC canary, check the restore/save steps for hits and the existing internal
+cache server for requests, then compare completed-job RX and util NAT RX against
+a similar run. Exercise a cold key and a warm key within the same cache scope
+(with `run-every-commit: true` only for the controlled canary if needed to bypass
+the existing run-history marker). A cache miss must still install and scan normally.
+Live hit rate and NAT savings must be measured after the caller opts into the
+new action commit; changing this repository alone does not update SHA-pinned users.
+
 ### Action Outputs
 
 | Output | Description |

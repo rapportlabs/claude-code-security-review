@@ -164,11 +164,62 @@ runs:
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 pinned to commit hash
       with:
         node-version: '18'
-    
-    - name: Install dependencies
+
+    - name: Prepare dependency cache keys
+      id: dependency-cache-keys
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true'
+      continue-on-error: true
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
+      run: |
+        # Hash the action's requirements, not files from the caller's checkout.
+        # Isolated Python avoids importing modules from the PR workspace.
+        REQUIREMENTS_HASH=$(python -I -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$ACTION_PATH/claudecode/requirements.txt")
+        PYTHON_VERSION=$(python -I -c 'import platform; print(platform.python_version())')
+        PIP_VERSION=$(python -I -m pip --version | awk '{print $2}')
+        NODE_VERSION=$(node --version)
+        NPM_VERSION=$(npm --version)
+        # Floating dependency constraints are unchanged. Refresh the immutable
+        # cache weekly, with the previous compatible entry available as a seed.
+        CACHE_WEEK=$(date -u +%G-W%V)
+        PIP_PREFIX="claudecode-pip-v1-${RUNNER_OS}-${RUNNER_ARCH}-${PYTHON_VERSION}-${PIP_VERSION}-${REQUIREMENTS_HASH}-"
+        NPM_PREFIX="claudecode-npm-v1-${RUNNER_OS}-${RUNNER_ARCH}-${NODE_VERSION}-${NPM_VERSION}-claude-code-"
+        {
+          echo "pip-prefix=$PIP_PREFIX"
+          echo "pip-key=${PIP_PREFIX}${CACHE_WEEK}"
+          echo "npm-prefix=$NPM_PREFIX"
+          echo "npm-key=${NPM_PREFIX}${CACHE_WEEK}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore pip download cache
+      id: pip-download-cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.dependency-cache-keys.outcome == 'success'
+      continue-on-error: true
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/claudecode-dependencies/pip
+        key: ${{ steps.dependency-cache-keys.outputs.pip-key }}
+        restore-keys: ${{ steps.dependency-cache-keys.outputs.pip-prefix }}
+
+    - name: Restore npm download cache
+      id: npm-download-cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.dependency-cache-keys.outcome == 'success'
+      continue-on-error: true
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        # Cache package data only, not npm logs or authentication configuration.
+        path: ${{ runner.temp }}/claudecode-dependencies/npm/_cacache
+        key: ${{ steps.dependency-cache-keys.outputs.npm-key }}
+        restore-keys: ${{ steps.dependency-cache-keys.outputs.npm-prefix }}
+
+    - name: Install dependencies
+      id: install-dependencies
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PIP_CACHE_DIR: ${{ runner.temp }}/claudecode-dependencies/pip
+        npm_config_cache: ${{ runner.temp }}/claudecode-dependencies/npm
       run: |
         echo "::group::Install Deps"
         if [ "${{ steps.claudecode-check.outputs.enable_claudecode }}" == "true" ]; then
@@ -177,7 +228,25 @@ runs:
         fi
         sudo apt-get update && sudo apt-get install -y jq
         echo "::endgroup::"
-    
+
+    # Save immediately after a successful installation, before the scan. A scan
+    # failure should not discard downloads; a cache failure must not block it.
+    - name: Save pip download cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.install-dependencies.outcome == 'success' && steps.pip-download-cache.outcome == 'success' && steps.pip-download-cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/claudecode-dependencies/pip
+        key: ${{ steps.dependency-cache-keys.outputs.pip-key }}
+
+    - name: Save npm download cache
+      if: steps.claudecode-check.outputs.enable_claudecode == 'true' && steps.install-dependencies.outcome == 'success' && steps.npm-download-cache.outcome == 'success' && steps.npm-download-cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/claudecode-dependencies/npm/_cacache
+        key: ${{ steps.dependency-cache-keys.outputs.npm-key }}
+
     - name: Run ClaudeCode scan
       id: claudecode-scan
       if: steps.claudecode-check.outputs.enable_claudecode == 'true'
