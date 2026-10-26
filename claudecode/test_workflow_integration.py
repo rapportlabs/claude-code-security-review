@@ -198,8 +198,8 @@ index 8901234..5678901 100644
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 
-                # Should exit with 1 due to HIGH severity findings
-                assert exc_info.value.code == 1
+                # A completed scan succeeds even with HIGH severity findings
+                assert exc_info.value.code == 0
         
         # Verify API calls
         assert mock_get.call_count == 3
