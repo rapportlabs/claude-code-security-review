@@ -662,9 +662,9 @@ def main():
         # Output JSON to stdout
         print(json.dumps(output, indent=2))
         
-        # Exit with appropriate code
-        high_severity_count = len([f for f in kept_findings if f.get('severity', '').upper() == 'HIGH'])
-        sys.exit(EXIT_GENERAL_ERROR if high_severity_count > 0 else EXIT_SUCCESS)
+        # Execution status is separate from findings severity. Callers enforce
+        # their own severity policy using the successfully produced findings.
+        sys.exit(EXIT_SUCCESS)
         
     except Exception as e:
         print(json.dumps({'error': f'Unexpected error: {str(e)}'}))

@@ -358,7 +358,7 @@ class TestMainFunction:
             with pytest.raises(SystemExit) as exc_info:
                 main()
             
-            assert exc_info.value.code == 1  # High severity finding, exit 1
+            assert exc_info.value.code == 0  # Completed audit; severity is in the findings
             
             captured = capsys.readouterr()
             output = json.loads(captured.out)
@@ -484,7 +484,7 @@ class TestMainFunction:
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 
-                assert exc_info.value.code == 1  # Has HIGH findings
+                assert exc_info.value.code == 0  # Completed audit retains unfiltered HIGH findings
                 
                 captured = capsys.readouterr()
                 output = json.loads(captured.out)
