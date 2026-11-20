@@ -202,7 +202,8 @@ runs:
         echo "::group::Install Deps"
         if [ "${{ steps.claudecode-check.outputs.enable_claudecode }}" == "true" ]; then
           pip install -r "$ACTION_PATH/claudecode/requirements.txt"
-          npm install -g @anthropic-ai/claude-code
+          # 러너 이미지 툴캐시 Node 에 이미 있으면 npm 재설치(NAT 경유)를 생략한다.
+          command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code
         fi
         if ! command -v jq >/dev/null 2>&1; then
           sudo apt-get update && sudo apt-get install -y jq
